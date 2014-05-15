@@ -17,6 +17,7 @@
 
 #define BCM2708_PERI_BASE        0x20000000
 #define GPIO_BASE                (BCM2708_PERI_BASE + 0x200000) /* GPIO controller */
+#define FB_BASE                  (BCM2708_PERI_BASE + 0xB880)   /* Frame buffer, see http://magicsmoke.co.za/?p=284 */
 
 #include "Python.h"
 
@@ -27,10 +28,12 @@
 #define BLOCK_SIZE (4*1024)
 
 int  mem_fd;
-void *gpio_map;
+void *gpio_map, fb_map;
 
 // I/O access
 volatile unsigned *gpio;
+// Frame buffer mailbox access
+volatile unsigned *fb;
 
 
 // GPIO setup macros. Always use INP_GPIO(x) before using OUT_GPIO(x) or SET_GPIO_ALT(x,y)
@@ -60,10 +63,20 @@ static void setup_io()
     gpio_map = mmap(
         NULL,                 //Any adddress in our space will do
         BLOCK_SIZE,           //Map length
-        PROT_READ|PROT_WRITE, // Enable reading & writting to mapped memory
+        PROT_READ|PROT_WRITE, //Enable reading & writing to mapped memory
         MAP_SHARED,           //Shared with other processes
         mem_fd,               //File to map
         GPIO_BASE             //Offset to GPIO peripheral
+    );
+
+    /* mmap GPIO */
+    fb_map = mmap(
+        NULL,                 //Any adddress in our space will do
+        BLOCK_SIZE,           //Map length
+        PROT_READ|PROT_WRITE, //Enable reading & writing to mapped memory
+        MAP_SHARED,           //Shared with other processes
+        mem_fd,               //File to map
+        FB_BASE               //Offset to frame buffer
     );
 
     close(mem_fd); //No need to keep mem_fd open after mmap
@@ -73,8 +86,16 @@ static void setup_io()
          exit(-1);
     }
 
+    if (fb_map == MAP_FAILED) {
+         printf("mmap error %p\n", fb_map);//errno also set!
+         exit(-1);
+    }
+
     // Always use volatile pointer!
     gpio = (volatile unsigned *)gpio_map;
+
+    // Always use volatile pointer!
+    fb = (volatile unsigned *)fb_map;
 
     // Set GPIO pins 7-11 to output
     for (g=7; g<=11; g++) {
@@ -233,6 +254,56 @@ xx_gpio(PyObject *self, PyObject *args)
     }
     Py_INCREF(Py_None);
     return Py_None;
+}
+
+
+struct fb_mailbox {
+    unsigned int base;
+    unsigned int filler[3];
+    unsigned int poll;
+    unsigned int sender;
+    unsigned int status;
+    unsigned int configuration;
+    unsigned int write;
+};
+
+PyDoc_STRVAR(xx_fbwr_doc,
+"fbwr(x)\n\
+\n\
+Write a 32-bit word to the frame buffer mailbox.");
+
+static PyObject *
+xx_fbwr(PyObject *self, PyObject *args)
+{
+	struct fb_mailbox *mailbox = (struct fb_mailbox *) fb;
+    int x;
+    if (!PyArg_ParseTuple(args, "i:fbwr", &x))
+        return NULL;
+	while (fb->status & (1 << 31) == 0);
+
+
+
+    Py_INCREF(Py_None);
+    return Py_None;
+}
+
+
+PyDoc_STRVAR(xx_fbrd_doc,
+"fbrd(x)\n\
+\n\
+Read a 32-bit word from the frame buffer mailbox.");
+
+static PyObject *
+xx_fbrd(PyObject *self, PyObject *args)
+{
+	struct fb_mailbox *mailbox = (struct fb_mailbox *) fb;
+    int x;
+    if (!PyArg_ParseTuple(args, ""))
+        return NULL;
+
+
+
+    return PyInt_FromLong(x);
 }
 
 
@@ -419,6 +490,10 @@ static PyMethodDef xx_methods[] = {
         PyDoc_STR("roj(a,b) -> None")},
     {"gpio",            xx_gpio,        METH_VARARGS,
         xx_gpio_doc},
+    {"fbwr",            xx_fbwr,        METH_VARARGS,
+        xx_fbwr_doc},
+    {"fbrd",            xx_fbrd,        METH_VARARGS,
+        xx_fbrd_doc},
     {"foo",             xx_foo,         METH_VARARGS,
         xx_foo_doc},
     {"new",             xx_new,         METH_VARARGS,
